@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Виртуальные окружения ─────────────────────────
+.venv/
+venv/
+env/
+
+# ── PyInstaller / сборки ──────────────────────────
+build/
+dist/
+installer_output/
+*.manifest
+
+# ── Данные приложения (БД, ключи, кеш) ────────────
+data/
+reports/
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Секреты ───────────────────────────────────────
+.env
+.env.*
+secrets.json
+secrets.local
+*.key
+*.pem
+
+# ── IDE / редакторы ───────────────────────────────
+.vscode/
+.idea/
+.claude/
+CLAUDE.md
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Логи ──────────────────────────────────────────
+*.log
+logs/
