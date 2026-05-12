@@ -1276,7 +1276,11 @@ class NewsPage(QWidget):
         full_html = (item.get("full_html") or "").strip()
         needs_extract = bool(link) and link.startswith(("http://", "https://"))\
             and len(full_html) < 1500
-        self._reader.load_item(item, loading=needs_extract)
+        # Плашку «Загружаю...» не показываем: для части источников
+        # (xakep, сайты за Cloudflare) экстрактор всё равно ничего не
+        # вытащит, а ложное обещание раздражает. Где экстракция
+        # сработает — текст молча подменится через _on_extracted.
+        self._reader.load_item(item, loading=False)
         self._mode_stack.setCurrentIndex(1)
         if needs_extract:
             self._start_extract(link, item)
