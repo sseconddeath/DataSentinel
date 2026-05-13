@@ -1,5 +1,5 @@
 # ai_assistant.py — AI-помощник (Groq / Ollama)
-import requests, json, os, sys, re
+import requests, json, os, sys, re, time
 
 # ВАЖНО: это НЕ криптозащита. Обфускация лишь скрывает ключ от
 # автоматических секрет-сканеров (GitHub, TruffleHog) и от тривиального
@@ -125,6 +125,14 @@ class OllamaAssistant:
                     full += chunk
                     if stream_callback: stream_callback(chunk)
                 if data.get("done"): break
+            if not full.strip():
+                # Модель отдала done=True без content (часто на бессмыслицу
+                # типа «f,j,f»). Иначе UI показывает пустой пузырь и юзер
+                # думает, что приложение зависло.
+                msg = ("Модель не смогла ответить на этот запрос. "
+                       "Попробуйте сформулировать вопрос полнее.")
+                if stream_callback: stream_callback(msg)
+                return msg
             return full
         except Exception as e:
             msg = f"Ошибка Ollama: {e}"
@@ -132,56 +140,111 @@ class OllamaAssistant:
             return msg
 
 class GroqAssistant:
-    URL   = "https://api.groq.com/openai/v1/chat/completions"
+    URL = "https://api.groq.com/openai/v1/chat/completions"
+    # Основная модель + фолбэк. Если на основной прилетит 403/429
+    # (rate-limit, контент-фильтр), молча перекатываемся на быструю
+    # 8B-модель — у неё отдельный квота-бакет и более мягкая модерация.
     MODEL = "llama-3.3-70b-versatile"
+    FALLBACK_MODEL = "llama-3.1-8b-instant"
+
+    @staticmethod
+    def _stream_once(api_key, model, question, context, stream_callback):
+        """Один запрос к Groq. Возвращает (status_code, text_or_full_response).
+        При status_code == 200 — text это собранный из стрима ответ;
+        иначе — короткое сообщение об ошибке (без чтения тела стрима)."""
+        r = requests.post(
+            GroqAssistant.URL,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json={"model": model, "stream": True,
+                  "temperature": 0.7, "max_tokens": 4096,
+                  "messages": [
+                      {"role": "system", "content": SYSTEM_PROMPT},
+                      {"role": "user", "content":
+                       f"[Справочные данные об утечках пользователя — "
+                       f"используй ТОЛЬКО если вопрос про безопасность]\n"
+                       f"{context}\n\n=== ВОПРОС ===\n{question}"},
+                  ]},
+            stream=True, timeout=60,
+        )
+        if r.status_code != 200:
+            return r.status_code, ""
+        full = ""
+        for line in r.iter_lines():
+            if not line:
+                continue
+            line = line.decode("utf-8") if isinstance(line, bytes) else line
+            if not line.startswith("data: "):
+                continue
+            ds = line[6:]
+            if ds.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(ds)["choices"][0].get(
+                    "delta", {}).get("content", "")
+                if chunk:
+                    chunk = _clean_text(chunk)
+                    full += chunk
+                    if stream_callback and chunk:
+                        stream_callback(chunk)
+            except Exception:
+                pass
+        return 200, full
 
     @staticmethod
     def ask(api_key, question, context, stream_callback=None):
-        # Если пользовательский ключ не задан — используем встроенный.
-        # Свой ключ имеет приоритет (для обхода shared rate limit).
+        # Свой ключ имеет приоритет (обход shared rate-limit на встроенном).
         if not api_key:
             api_key = _builtin_groq()
         if not api_key:
             msg = ("Groq API ключ не встроен в эту сборку.\n"
                    "Запустите build_inject.py inject перед сборкой или "
                    "используйте Ollama (см. Настройки).")
-            if stream_callback: stream_callback(msg)
+            if stream_callback:
+                stream_callback(msg)
             return msg
-        try:
-            r = requests.post(GroqAssistant.URL,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": GroqAssistant.MODEL, "stream": True, "temperature": 0.7, "max_tokens": 4096,
-                      "messages": [{"role":"system","content":SYSTEM_PROMPT},
-                                   {"role":"user","content":f"[Справочные данные об утечках пользователя — используй ТОЛЬКО если вопрос про безопасность]\n{context}\n\n=== ВОПРОС ===\n{question}"}]},
-                stream=True, timeout=60)
-            if r.status_code == 401:
-                msg = "Неверный API ключ Groq."
-                if stream_callback: stream_callback(msg); return msg
-            if r.status_code == 429:
-                msg = "Превышен лимит Groq. Попробуйте через минуту."
-                if stream_callback: stream_callback(msg); return msg
-            if r.status_code != 200:
-                msg = f"Ошибка Groq: HTTP {r.status_code}"
-                if stream_callback: stream_callback(msg); return msg
-            full = ""
-            for line in r.iter_lines():
-                if not line: continue
-                line = line.decode("utf-8") if isinstance(line, bytes) else line
-                if not line.startswith("data: "): continue
-                ds = line[6:]
-                if ds.strip() == "[DONE]": break
-                try:
-                    chunk = json.loads(ds)["choices"][0].get("delta",{}).get("content","")
-                    if chunk:
-                        chunk = _clean_text(chunk)
-                        full += chunk
-                        if stream_callback and chunk: stream_callback(chunk)
-                except: pass
-            return full
-        except Exception as e:
-            msg = f"Ошибка: {e}"
-            if stream_callback: stream_callback(msg)
-            return msg
+
+        # Попытки: основная модель → ретрай через 2с → фолбэк-модель.
+        # 403/429 от Groq на free-tier — это часто per-IP лимит или
+        # сработавший контент-фильтр. И ретрай, и фолбэк это лечат.
+        attempts = [
+            (GroqAssistant.MODEL, 0),
+            (GroqAssistant.MODEL, 2),
+            (GroqAssistant.FALLBACK_MODEL, 1),
+        ]
+        last_status = 0
+        for i, (model, delay) in enumerate(attempts):
+            if delay:
+                time.sleep(delay)
+            try:
+                status, full = GroqAssistant._stream_once(
+                    api_key, model, question, context, stream_callback)
+            except Exception as e:
+                msg = f"Ошибка сети: {e}"
+                if stream_callback:
+                    stream_callback(msg)
+                return msg
+            if status == 200:
+                return full
+            last_status = status
+            # 401 — ключ невалидный, ретраи не помогут.
+            if status == 401:
+                break
+
+        if last_status == 401:
+            msg = ("Неверный API ключ Groq. Если используете свой ключ "
+                   "(Настройки → AI), проверьте его.")
+        elif last_status in (403, 429):
+            msg = ("Groq временно отказал (лимит запросов или "
+                   "контент-фильтр). Попробуйте через минуту или "
+                   "переформулируйте вопрос.")
+        else:
+            msg = (f"Groq не отвечает (HTTP {last_status}). "
+                   f"Попробуйте позже или переключитесь на Ollama "
+                   f"в Настройках.")
+        if stream_callback:
+            stream_callback(msg)
+        return msg
 
 class AIAssistant:
     """Единый интерфейс — Groq / Ollama."""
