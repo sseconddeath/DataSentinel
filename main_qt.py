@@ -500,10 +500,14 @@ class Sidebar(QFrame):
 
         self.version_lbl = QLabel(f"v{APP_VERSION}", self.footer)
         self.version_lbl.setAlignment(Qt.AlignCenter)
+        self.version_lbl.setCursor(Qt.PointingHandCursor)
+        self.version_lbl.setToolTip(
+            "Нажми чтобы проверить обновления сейчас")
         self.version_lbl.setStyleSheet(
             f"font-family:'Geist'; color:{cfg.TEXT_MUTED};"
             " font-size:10px; background:transparent;"
         )
+        self.version_lbl.mousePressEvent = self._on_version_click
         footer_lay.addWidget(self.version_lbl)
 
         lay.addWidget(self.footer)
@@ -566,6 +570,17 @@ class Sidebar(QFrame):
                 "https://github.com/sseconddeath/Knox/releases")
         except Exception:
             pass
+
+    def _on_version_click(self, ev):
+        # Клик по лейблу версии → ручная проверка обновлений с UI-фидбеком.
+        # self.window() возвращает MainWindow (QMainWindow-родитель в
+        # дереве виджетов).
+        win = self.window()
+        if hasattr(win, "_check_for_update_async"):
+            try:
+                win._check_for_update_async(manual=True)
+            except Exception:
+                pass
 
 class PagePlaceholder(QWidget):
     def __init__(self, title: str, parent=None):
@@ -898,27 +913,34 @@ class MainWindow(QMainWindow):
             self._ipc_server.listen(SINGLE_INSTANCE_KEY)
         self._ipc_server.newConnection.connect(self._on_ipc_connection)
 
-        # Авто-проверка обновлений: первая через 5 секунд после старта
-        # (чтобы не тормозить запуск), потом каждый час пока приложение
-        # открыто. Без этого long-running сессии не видели бы новых
-        # релизов — раньше проверка делалась только на старте.
+        # Авто-проверка обновлений: первая через 5 секунд после старта,
+        # потом каждые 20 минут пока окно живёт. Плюс юзер может вручную
+        # дёрнуть проверку кликом по лейблу версии в сайдбаре.
         self._update_thread = None
         self._update_worker = None
         self._notified_update_version: str = ""  # последний показанный юзеру
+        self._manual_update_check: bool = False  # флаг ручной проверки
         QTimer.singleShot(5_000, self._check_for_update_async)
         self._update_recheck_timer = QTimer(self)
         self._update_recheck_timer.timeout.connect(
             self._check_for_update_async)
-        self._update_recheck_timer.start(60 * 60 * 1000)  # каждый час
+        self._update_recheck_timer.start(20 * 60 * 1000)  # каждые 20 минут
 
-    def _check_for_update_async(self):
+    def _check_for_update_async(self, manual: bool = False):
         if not UPDATER_OK:
+            if manual:
+                self._show_version_status("апдейтер недоступен")
             return
         # Если предыдущая проверка ещё крутится (network тормозит) —
         # не запускаем параллельную, дождёмся текущей.
         if (self._update_thread is not None
                 and self._update_thread.isRunning()):
+            if manual:
+                self._show_version_status("проверяю...")
             return
+        if manual:
+            self._manual_update_check = True
+            self._show_version_status("проверяю...")
         # Сохраняем ссылки на QThread/worker как атрибуты, иначе GC
         # снесёт их до того как сигналы успеют долететь.
         self._update_thread = QThread(self)
@@ -926,24 +948,56 @@ class MainWindow(QMainWindow):
         self._update_worker.moveToThread(self._update_thread)
         self._update_thread.started.connect(self._update_worker.run)
         self._update_worker.found.connect(self._on_update_found)
+        self._update_worker.done.connect(self._on_update_check_done)
         self._update_worker.found.connect(self._update_thread.quit)
         self._update_worker.done.connect(self._update_thread.quit)
         self._update_thread.finished.connect(self._update_worker.deleteLater)
         self._update_thread.finished.connect(self._update_thread.deleteLater)
         self._update_thread.start()
 
+    def _on_update_check_done(self):
+        # Эмитится воркером когда обновлений НЕТ. Авто-чек молча
+        # игнорирует; ручной чек должен дать юзеру понять, что
+        # проверка отработала и он на свежей версии.
+        if self._manual_update_check:
+            self._manual_update_check = False
+            self._show_version_status("актуальная версия")
+
     def _on_update_found(self, info: dict):
         version = info.get("version", "")
-        # Если юзер уже видел плашку про эту версию в текущей сессии
-        # (и, возможно, нажал «Позже») — не показываем заново на
-        # следующем hourly-recheck'е. Покажем если выйдет ещё более
-        # новая версия.
-        if version and version == self._notified_update_version:
-            self._pending_update = info  # обновляем info на свежее
+        manual = self._manual_update_check
+        self._manual_update_check = False
+        # Если юзер уже видел плашку про эту версию в этой сессии и
+        # нажал «Позже» — на авто-rechek'е не дёргаем повторно. Ручной
+        # клик «Проверить» — наоборот, всегда показываем баннер,
+        # юзер явно попросил.
+        already_notified = (version and
+                            version == self._notified_update_version)
+        if already_notified and not manual:
+            self._pending_update = info
             return
         self._notified_update_version = version
         self._pending_update = info
         self.update_banner.show_for(version)
+        if manual:
+            # Сбрасываем «проверяю...» обратно на «v1.0.X» — плашку
+            # сверху юзер увидит и так.
+            self._show_version_status(f"v{APP_VERSION}", revert=False)
+
+    def _show_version_status(self, text: str, revert: bool = True):
+        """Меняет текст лейбла версии в сайдбаре. revert=True вернёт
+        «v1.0.X» обратно через 3 секунды (для статусов «проверяю»/
+        «актуальная»)."""
+        sb = getattr(self, "sidebar", None)
+        if sb is None or not hasattr(sb, "version_lbl"):
+            return
+        sb.version_lbl.setText(text)
+        if revert:
+            QTimer.singleShot(
+                3_000,
+                lambda: sb.version_lbl.setText(f"v{APP_VERSION}")
+                if hasattr(sb, "version_lbl") else None,
+            )
 
     def _start_update(self):
         info = getattr(self, "_pending_update", None)
