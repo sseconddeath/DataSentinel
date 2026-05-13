@@ -85,6 +85,7 @@ _NAV_SVG: dict[str, str] = {
     "ai": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M12 7V3"/><circle cx="12" cy="3" r="1"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/><path d="M9 17h6"/></svg>',
     "новости": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8z"/></svg>',
     "настройки": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    "github": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>',
 }
 
 NAV_ITEMS = [
@@ -473,16 +474,39 @@ class Sidebar(QFrame):
 
         lay.addStretch(1)
 
-        # Версия + клик открывает страницу релизов на GitHub. Так юзер
-        # быстро видит на чём он сидит и может глянуть changelog.
-        self.version_lbl = QLabel(f"Knox v{APP_VERSION}", self)
-        self.version_lbl.setCursor(Qt.PointingHandCursor)
+        # Футер: иконка GitHub + текст версии под ней. Клик на иконке
+        # открывает страницу релизов — оттуда видно changelog. Влезает
+        # и в свёрнутый сайдбар (64px), потому что обе части центрируются.
+        self.footer = QWidget(self)
+        self.footer.setStyleSheet("background:transparent;")
+        footer_lay = QVBoxLayout(self.footer)
+        footer_lay.setContentsMargins(0, 6, 0, 2)
+        footer_lay.setSpacing(2)
+        footer_lay.setAlignment(Qt.AlignHCenter)
+
+        self.github_btn = QPushButton(self.footer)
+        self.github_btn.setCursor(Qt.PointingHandCursor)
+        self.github_btn.setFixedSize(32, 32)
+        self.github_btn.setIconSize(QSize(20, 20))
+        self.github_btn.setToolTip("Открыть Knox на GitHub")
+        self.github_btn.setStyleSheet(
+            "QPushButton { background:transparent; border:none; }"
+            f"QPushButton:hover {{ background:{cfg.BG_ELEVATED}; "
+            "border-radius:6px; }"
+        )
+        self.github_btn.setIcon(make_nav_icon("github", cfg.TEXT_MUTED, 20))
+        self.github_btn.clicked.connect(self._on_github_click)
+        footer_lay.addWidget(self.github_btn, 0, Qt.AlignHCenter)
+
+        self.version_lbl = QLabel(f"v{APP_VERSION}", self.footer)
         self.version_lbl.setAlignment(Qt.AlignCenter)
-        self.version_lbl.setFixedHeight(28)
-        self.version_lbl.setToolTip("Открыть страницу релизов на GitHub")
-        self.version_lbl.setStyleSheet(self._version_qss())
-        self.version_lbl.mousePressEvent = self._on_version_click
-        lay.addWidget(self.version_lbl)
+        self.version_lbl.setStyleSheet(
+            f"font-family:'Geist'; color:{cfg.TEXT_MUTED};"
+            " font-size:10px; background:transparent;"
+        )
+        footer_lay.addWidget(self.version_lbl)
+
+        lay.addWidget(self.footer)
 
         # Анимация ширины
         self._anim = QPropertyAnimation(self, b"maximumWidth")
@@ -505,11 +529,6 @@ class Sidebar(QFrame):
         self.section_lbl.setText("" if self._collapsed else "НАВИГАЦИЯ")
         for btn in self.buttons.values():
             btn.set_collapsed(self._collapsed)
-        # При свёрнутом сайдбаре «Knox v1.0.2» не влезает по ширине —
-        # показываем только саму версию.
-        self.version_lbl.setText(
-            f"v{APP_VERSION}" if self._collapsed else f"Knox v{APP_VERSION}"
-        )
 
     def set_active(self, page_id: str):
         for pid, btn in self.buttons.items():
@@ -540,15 +559,7 @@ class Sidebar(QFrame):
                 f" font-size:10px; font-weight:700; letter-spacing:1px;"
                 f" background:transparent; padding:6px;")
 
-    def _version_qss(self) -> str:
-        # :hover через QLabel-styling нельзя выставить через setStyleSheet
-        # на сам label (только через дочерние селекторы). Hover-эффект делаем
-        # вручную в eventFilter, но мне лень — ограничимся курсором-указателем.
-        return (f"QLabel {{ font-family:'Geist'; color:{cfg.TEXT_MUTED};"
-                f" font-size:11px; background:transparent; }}"
-                f"QLabel:hover {{ color:{cfg.TEXT_PRIMARY}; }}")
-
-    def _on_version_click(self, ev):
+    def _on_github_click(self):
         import webbrowser
         try:
             webbrowser.open_new_tab(
@@ -1155,6 +1166,12 @@ class MainWindow(QMainWindow):
                         btn._refresh_icon()
                     except Exception:
                         pass
+                # footer-иконка GitHub — тоже из cached pixmap, нужен refresh
+                try:
+                    sb.github_btn.setIcon(
+                        make_nav_icon("github", cfg.TEXT_MUTED, 20))
+                except Exception:
+                    pass
             # paintEvent-based виджеты (BurgerButton, NavButton paint,
             # делегаты в журнале/новостях) подхватят новые cfg при repaint.
             for w in self.findChildren(QWidget):
