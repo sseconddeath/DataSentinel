@@ -5,7 +5,7 @@
 ;   2. iscc installer.iss
 
 #define MyAppName "Knox"
-#define MyAppVersion "1.0.6"
+#define MyAppVersion "1.0.7"
 #define MyAppPublisher "Knox"
 #define MyAppURL "https://github.com/sseconddeath/Knox"
 #define MyAppExeName "Knox.exe"

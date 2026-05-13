@@ -108,14 +108,22 @@ class OllamaAssistant:
         с последним значением)."""
         import tempfile
         import subprocess
+        import uuid
         url = "https://ollama.com/download/OllamaSetup.exe"
+        # Уникальное имя на каждую попытку: если первая упала и оставила
+        # OllamaSetup.exe в Temp залоченным (AV сканирует, установщик
+        # ещё крутится), вторая попытка не падала бы с [Errno 13]
+        # Permission denied при попытке перезаписи.
+        dest = os.path.join(
+            tempfile.gettempdir(),
+            f"OllamaSetup_{uuid.uuid4().hex[:8]}.exe",
+        )
         try:
             r = requests.get(url, stream=True, timeout=60,
                              allow_redirects=True)
             if r.status_code != 200:
                 return False, f"Не удалось скачать Ollama: HTTP {r.status_code}"
             total = int(r.headers.get("Content-Length") or 0)
-            dest = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
             received = 0
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(chunk_size=64 * 1024):
@@ -154,6 +162,12 @@ class OllamaAssistant:
                           "«Скачать модель» — это ещё ~5 ГБ.")
         except subprocess.TimeoutExpired:
             return False, "Установщик Ollama не ответил за 10 минут."
+        except PermissionError as e:
+            return False, (
+                "Антивирус или предыдущий запуск Ollama держит файл "
+                "установщика. Попробуйте: 1) подождать минуту и нажать "
+                "ещё раз; 2) временно отключить антивирус; 3) перезапустить "
+                "Knox.")
         except Exception as e:
             return False, f"Ошибка установки Ollama: {e}"
 
